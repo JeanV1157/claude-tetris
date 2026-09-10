@@ -1,0 +1,55 @@
+name: Claude Issue Triage
+
+on:
+  issues:
+    types: [opened, edited]
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Issue Triage
+        id: claude-triage
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: '--allowedTools "Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh issue view:*),Bash(gh api:*),Bash(gh label list:*)"'
+          prompt: |
+            Analiza el issue #${{ github.event.issue.number }} de este repositorio (título y cuerpo)
+            y explora el código si es necesario para entender el contexto.
+
+            Haz lo siguiente:
+
+            1. Obtén el issue con `gh issue view ${{ github.event.issue.number }} --json title,body,labels,comments`.
+
+            2. Determina qué labels EXISTENTES del repo aplican (consulta `gh label list` para ver
+               la lista disponible; no crees labels nuevos). Ajusta las labels del issue con
+               `gh issue edit ${{ github.event.issue.number }} --add-label "..."` y, si el issue fue
+               editado y alguna label ya no corresponde, quítala con `--remove-label "..."`.
+
+            3. Redacta un diagnóstico general del problema con estas secciones:
+               - Resumen del problema
+               - Causa probable
+               - Componentes/archivos del repo probablemente afectados
+               - Enfoque de solución sugerido (a alto nivel, sin implementar código)
+
+               Empieza el comentario con el marcador HTML `<!-- claude-issue-triage -->` (en su propia
+               línea, invisible al renderizar) para poder identificarlo después.
+
+            4. Busca en los comentarios del issue (del paso 1) si ya existe un comentario que contenga
+               `<!-- claude-issue-triage -->`. Si existe, actualízalo con
+               `gh issue comment ${{ github.event.issue.number }} --edit-last` solo si el último comentario
+               es el tuyo; si no puedes editar el comentario existente de forma fiable, usa
+               `gh api` para editarlo (`PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}`) en vez
+               de publicar un comentario duplicado. Si no existe, publica uno nuevo con
+               `gh issue comment ${{ github.event.issue.number }} --body-file -`.
