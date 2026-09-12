@@ -13,6 +13,7 @@ const COLORS = [
   '#e57373', // Z - red
   '#90caf9', // J - pale blue
   '#ffb74d', // L - orange
+  '#b0bec5', // N - tuerca (nut)
 ];
 
 const PIECES = [
@@ -24,6 +25,7 @@ const PIECES = [
   [[5,5,0],[0,5,5],[0,0,0]],                  // Z
   [[6,0,0],[6,6,6],[0,0,0]],                  // J
   [[0,0,7],[7,7,7],[0,0,0]],                  // L
+  [[8,8,8],[8,0,8],[8,8,8]],                  // N - Tuerca
 ];
 
 const LINE_SCORES = [0, 100, 300, 500, 800];
@@ -66,8 +68,16 @@ function createBoard() {
   return Array.from({ length: ROWS }, () => new Array(COLS).fill(0));
 }
 
+const PIECE_WEIGHTS = [3, 3, 3, 3, 3, 3, 3, 1]; // types 1-8; nut (8) is rarer
+
 function randomPiece() {
-  const type = Math.floor(Math.random() * 7) + 1;
+  const totalWeight = PIECE_WEIGHTS.reduce((a, b) => a + b, 0);
+  let roll = Math.random() * totalWeight;
+  let type = 1;
+  for (let i = 0; i < PIECE_WEIGHTS.length; i++) {
+    if (roll < PIECE_WEIGHTS[i]) { type = i + 1; break; }
+    roll -= PIECE_WEIGHTS[i];
+  }
   const shape = PIECES[type].map(row => [...row]);
   return { type, shape, x: Math.floor(COLS / 2) - Math.floor(shape[0].length / 2), y: 0 };
 }
