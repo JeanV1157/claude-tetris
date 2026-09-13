@@ -52,6 +52,112 @@ const overlayTitle = document.getElementById('overlay-title');
 const overlayScore = document.getElementById('overlay-score');
 const restartBtn = document.getElementById('restart-btn');
 const themeToggle = document.getElementById('theme-toggle');
+const comboDisplayEl = document.getElementById('combo-display');
+const volumeSlider = document.getElementById('volume-slider');
+
+const CLEAR_ANIM_MS = 200;
+const COMBO_BONUS = 50;
+
+// ---- Audio (Web Audio API) ----
+const VOLUME_KEY = 'tetris-volume';
+let audioCtx = null;
+let masterGain = null;
+let volume = 0.4;
+
+function getAudioCtx() {
+  if (!audioCtx) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    audioCtx = new Ctx();
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = volume;
+    masterGain.connect(audioCtx.destination);
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+
+function playTone(freq, duration, type, delay, peak) {
+  const ctxA = getAudioCtx();
+  const osc = ctxA.createOscillator();
+  const gain = ctxA.createGain();
+  osc.type = type || 'sine';
+  osc.frequency.value = freq;
+  const start = ctxA.currentTime + (delay || 0);
+  gain.gain.setValueAtTime(0.0001, start);
+  gain.gain.linearRampToValueAtTime(peak ?? 0.6, start + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+  osc.connect(gain);
+  gain.connect(masterGain);
+  osc.start(start);
+  osc.stop(start + duration + 0.02);
+}
+
+function playLineClearSound() {
+  playTone(880, 0.12, 'square', 0, 0.5);
+}
+
+function playComboSound(combo) {
+  if (combo === 2) {
+    playTone(523.25, 0.1, 'triangle', 0, 0.5);
+    playTone(659.25, 0.14, 'triangle', 0.09, 0.5);
+  } else if (combo === 3) {
+    playTone(659.25, 0.09, 'square', 0, 0.45);
+    playTone(987.77, 0.14, 'square', 0.08, 0.5);
+  } else {
+    playTone(523.25, 0.09, 'sawtooth', 0, 0.4);
+    playTone(659.25, 0.09, 'sawtooth', 0.09, 0.4);
+    playTone(783.99, 0.09, 'sawtooth', 0.18, 0.45);
+    playTone(1046.5, 0.22, 'sawtooth', 0.27, 0.55);
+  }
+}
+
+function playDropTickSound() {
+  playTone(150, 0.045, 'square', 0, 0.18);
+}
+
+function playPauseSound(isPausing) {
+  if (isPausing) {
+    playTone(440, 0.09, 'sine', 0, 0.35);
+    playTone(330, 0.12, 'sine', 0.08, 0.3);
+  } else {
+    playTone(330, 0.09, 'sine', 0, 0.3);
+    playTone(440, 0.12, 'sine', 0.08, 0.35);
+  }
+}
+
+function playGameOverSound() {
+  playTone(392.0, 0.15, 'sawtooth', 0, 0.45);
+  playTone(329.63, 0.15, 'sawtooth', 0.15, 0.42);
+  playTone(261.63, 0.15, 'sawtooth', 0.3, 0.4);
+  playTone(196.0, 0.4, 'sawtooth', 0.45, 0.4);
+}
+
+function initVolume() {
+  const saved = localStorage.getItem(VOLUME_KEY);
+  volume = saved !== null ? Number(saved) / 100 : 0.4;
+  volumeSlider.value = Math.round(volume * 100);
+  if (masterGain) masterGain.gain.value = volume;
+}
+
+volumeSlider.addEventListener('input', () => {
+  volume = Number(volumeSlider.value) / 100;
+  if (masterGain) masterGain.gain.value = volume;
+  localStorage.setItem(VOLUME_KEY, volumeSlider.value);
+});
+
+// ---- Combo visual ----
+let comboAnimTimeout = null;
+
+function showCombo(combo) {
+  if (combo < 2) return;
+  const tier = combo >= 4 ? 'combo-4' : combo === 3 ? 'combo-3' : 'combo-2';
+  comboDisplayEl.textContent = `${combo}x COMBO!`;
+  comboDisplayEl.className = 'combo-display';
+  void comboDisplayEl.offsetWidth;
+  comboDisplayEl.classList.add(tier, 'show');
+  clearTimeout(comboAnimTimeout);
+  comboAnimTimeout = setTimeout(() => comboDisplayEl.classList.remove('show'), 800);
+}
 
 const THEME_KEY = 'tetris-theme';
 let gridColor = '#22222e';
@@ -75,6 +181,7 @@ themeToggle.addEventListener('change', () => {
 let board, current, next, score, lines, level, paused, gameOver, lastTime, dropAccum, dropInterval, animId;
 let linesSinceBomb, bombQueued;
 let pieceQueue, swapLocked, piecesUntilSwap;
+let combo, clearing, clearRows, clearStart;
 
 const SWAP_COOLDOWN_PIECES = 3;
 
@@ -156,28 +263,46 @@ function merge() {
         board[current.y + r][current.x + c] = current.shape[r][c];
 }
 
-function clearLines() {
-  let cleared = 0;
-  for (let r = ROWS - 1; r >= 0; r--) {
-    if (board[r].every(v => v !== 0)) {
-      board.splice(r, 1);
-      board.unshift(new Array(COLS).fill(0));
-      cleared++;
-      r++;
-    }
+function findFullRows() {
+  const rows = [];
+  for (let r = 0; r < ROWS; r++) {
+    if (board[r].every(v => v !== 0)) rows.push(r);
   }
-  if (cleared) {
-    lines += cleared;
-    score += (LINE_SCORES[cleared] || 0) * level;
-    level = Math.floor(lines / 10) + 1;
-    dropInterval = Math.max(100, 1000 - (level - 1) * 90);
-    linesSinceBomb += cleared;
-    while (linesSinceBomb >= LINES_PER_BOMB) {
-      linesSinceBomb -= LINES_PER_BOMB;
-      bombQueued = true;
-    }
-    updateHUD();
+  return rows;
+}
+
+function finalizeClear() {
+  const cleared = clearRows.length;
+  const sorted = [...clearRows].sort((a, b) => a - b);
+  for (const r of sorted) {
+    board.splice(r, 1);
+    board.unshift(new Array(COLS).fill(0));
   }
+
+  lines += cleared;
+  combo++;
+  score += (LINE_SCORES[cleared] || 0) * level;
+
+  if (combo >= 2) {
+    score += combo * COMBO_BONUS * level;
+    showCombo(combo);
+    playComboSound(combo);
+  } else {
+    playLineClearSound();
+  }
+
+  level = Math.floor(lines / 10) + 1;
+  dropInterval = Math.max(100, 1000 - (level - 1) * 90);
+  linesSinceBomb += cleared;
+  while (linesSinceBomb >= LINES_PER_BOMB) {
+    linesSinceBomb -= LINES_PER_BOMB;
+    bombQueued = true;
+  }
+
+  clearing = false;
+  clearRows = [];
+  updateHUD();
+  afterLock();
 }
 
 function explodeBomb() {
@@ -201,6 +326,7 @@ function hardDrop() {
   const gy = ghostY();
   score += (gy - current.y) * 2;
   current.y = gy;
+  playDropTickSound();
   lockPiece();
 }
 
@@ -208,6 +334,7 @@ function softDrop() {
   if (!collide(current.shape, current.x, current.y + 1)) {
     current.y++;
     score += 1;
+    playDropTickSound();
     updateHUD();
   } else {
     lockPiece();
@@ -217,10 +344,23 @@ function softDrop() {
 function lockPiece() {
   if (current.type === BOMB_TYPE) {
     explodeBomb();
-  } else {
-    merge();
-    clearLines();
+    afterLock();
+    return;
   }
+
+  merge();
+  const fullRows = findFullRows();
+  if (fullRows.length) {
+    clearing = true;
+    clearRows = fullRows;
+    clearStart = performance.now();
+  } else {
+    combo = 0;
+    afterLock();
+  }
+}
+
+function afterLock() {
   if (swapLocked) {
     piecesUntilSwap--;
     if (piecesUntilSwap <= 0) {
@@ -308,6 +448,20 @@ function drawGrid() {
   }
 }
 
+function drawClearFlash() {
+  const elapsed = performance.now() - clearStart;
+  const t = Math.min(1, elapsed / CLEAR_ANIM_MS);
+  const blink = Math.sin(t * Math.PI * 10) > 0;
+  const alpha = 0.55 + 0.45 * Math.abs(Math.sin(t * Math.PI * 10));
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = blink ? '#ffffff' : '#ffeb3b';
+  for (const r of clearRows) {
+    ctx.fillRect(0, r * BLOCK, COLS * BLOCK, BLOCK);
+  }
+  ctx.restore();
+}
+
 function draw() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   drawGrid();
@@ -316,6 +470,11 @@ function draw() {
   for (let r = 0; r < ROWS; r++)
     for (let c = 0; c < COLS; c++)
       drawBlock(ctx, c, r, board[r][c], BLOCK);
+
+  if (clearing) {
+    drawClearFlash();
+    return;
+  }
 
   // ghost
   const gy = ghostY();
@@ -344,6 +503,7 @@ function drawNext() {
 function endGame() {
   gameOver = true;
   cancelAnimationFrame(animId);
+  playGameOverSound();
   overlayTitle.textContent = 'GAME OVER';
   overlayScore.textContent = `Puntuación: ${score.toLocaleString()}`;
   overlay.classList.remove('hidden');
@@ -352,6 +512,7 @@ function endGame() {
 function togglePause() {
   if (gameOver) return;
   paused = !paused;
+  playPauseSound(paused);
   if (!paused) {
     lastTime = performance.now();
     loop(lastTime);
@@ -367,11 +528,23 @@ function loop(ts) {
   if (gameOver) return;
   const dt = ts - lastTime;
   lastTime = ts;
+
+  if (clearing) {
+    if (ts - clearStart >= CLEAR_ANIM_MS) {
+      finalizeClear();
+      if (gameOver) return;
+    }
+    draw();
+    animId = requestAnimationFrame(loop);
+    return;
+  }
+
   dropAccum += dt;
   if (dropAccum >= dropInterval) {
     dropAccum = 0;
     if (!collide(current.shape, current.x, current.y + 1)) {
       current.y++;
+      playDropTickSound();
     } else {
       lockPiece();
     }
@@ -395,6 +568,10 @@ function init() {
   pieceQueue = [];
   swapLocked = false;
   piecesUntilSwap = 0;
+  combo = 0;
+  clearing = false;
+  clearRows = [];
+  clearStart = 0;
   lastTime = performance.now();
   next = randomPiece();
   spawn();
@@ -406,7 +583,7 @@ function init() {
 
 document.addEventListener('keydown', e => {
   if (e.code === 'KeyP') { togglePause(); return; }
-  if (paused || gameOver) return;
+  if (paused || gameOver || clearing) return;
   switch (e.code) {
     case 'ArrowLeft':
       if (!collide(current.shape, current.x - 1, current.y)) current.x--;
@@ -436,4 +613,5 @@ document.addEventListener('keydown', e => {
 restartBtn.addEventListener('click', init);
 
 initTheme();
+initVolume();
 init();

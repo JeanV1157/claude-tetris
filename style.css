@@ -86,12 +86,54 @@ body {
   align-items: flex-start;
 }
 
+.board-wrap {
+  position: relative;
+  display: block;
+}
+
 #board {
   display: block;
   border: 1px solid var(--board-border);
   background: var(--board-bg);
   border-radius: 4px;
   box-shadow: 0 0 40px rgba(0, 0, 0, 0.6);
+}
+
+.combo-display {
+  position: absolute;
+  top: 38%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.4);
+  font-size: 34px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  text-shadow: 0 0 12px currentColor, 0 0 2px rgba(0, 0, 0, 0.6);
+  z-index: 5;
+}
+
+.combo-display.show {
+  animation: comboPop 0.8s ease-out forwards;
+}
+
+.combo-display.combo-2 { color: #ffd54f; }
+.combo-display.combo-3 { color: #ff9800; }
+.combo-display.combo-4 { color: #ff3d3d; }
+
+@keyframes comboPop {
+  0% { opacity: 0; transform: translate(-50%, -30%) scale(0.3); }
+  30% { opacity: 1; transform: translate(-50%, -55%) scale(1.25); }
+  55% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -75%) scale(1); }
+}
+
+/* ---- Slider de volumen ---- */
+#volume-slider {
+  width: 100%;
+  accent-color: var(--value-color);
+  cursor: pointer;
 }
 
 /* ---- Panel lateral ---- */
