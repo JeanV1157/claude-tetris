@@ -124,6 +124,16 @@ body {
   letter-spacing: 1px;
 }
 
+.hint {
+  font-size: 11px;
+  color: var(--control-text);
+}
+
+#swap-section.disabled .value {
+  color: var(--label-color);
+  opacity: 0.5;
+}
+
 #next-canvas {
   display: block;
   border: 1px solid var(--board-border);

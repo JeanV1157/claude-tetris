@@ -14,6 +14,7 @@ const COLORS = [
   '#90caf9', // J - pale blue
   '#ffb74d', // L - orange
   '#b0bec5', // N - tuerca (nut)
+  '#37474f', // Bomba
 ];
 
 const PIECES = [
@@ -26,7 +27,12 @@ const PIECES = [
   [[6,0,0],[6,6,6],[0,0,0]],                  // J
   [[0,0,7],[7,7,7],[0,0,0]],                  // L
   [[8,8,8],[8,0,8],[8,8,8]],                  // N - Tuerca
+  [[9]],                                       // Bomba
 ];
+
+const BOMB_TYPE = 9;
+const BOMB_SCORE = 100;
+const LINES_PER_BOMB = 5;
 
 const LINE_SCORES = [0, 100, 300, 500, 800];
 
@@ -37,6 +43,10 @@ const nextCtx = nextCanvas.getContext('2d');
 const scoreEl = document.getElementById('score');
 const linesEl = document.getElementById('lines');
 const levelEl = document.getElementById('level');
+const powerupEl = document.getElementById('powerup-counter');
+const swapSectionEl = document.getElementById('swap-section');
+const swapCounterEl = document.getElementById('swap-counter');
+const swapProgressEl = document.getElementById('swap-progress');
 const overlay = document.getElementById('overlay');
 const overlayTitle = document.getElementById('overlay-title');
 const overlayScore = document.getElementById('overlay-score');
@@ -63,12 +73,21 @@ themeToggle.addEventListener('change', () => {
 });
 
 let board, current, next, score, lines, level, paused, gameOver, lastTime, dropAccum, dropInterval, animId;
+let linesSinceBomb, bombQueued;
+let pieceQueue, swapLocked, piecesUntilSwap;
+
+const SWAP_COOLDOWN_PIECES = 3;
 
 function createBoard() {
   return Array.from({ length: ROWS }, () => new Array(COLS).fill(0));
 }
 
 const PIECE_WEIGHTS = [3, 3, 3, 3, 3, 3, 3, 1]; // types 1-8; nut (8) is rarer
+
+function instantiatePiece(type) {
+  const shape = PIECES[type].map(row => [...row]);
+  return { type, shape, x: Math.floor(COLS / 2) - Math.floor(shape[0].length / 2), y: 0 };
+}
 
 function randomPiece() {
   const totalWeight = PIECE_WEIGHTS.reduce((a, b) => a + b, 0);
@@ -78,8 +97,22 @@ function randomPiece() {
     if (roll < PIECE_WEIGHTS[i]) { type = i + 1; break; }
     roll -= PIECE_WEIGHTS[i];
   }
-  const shape = PIECES[type].map(row => [...row]);
-  return { type, shape, x: Math.floor(COLS / 2) - Math.floor(shape[0].length / 2), y: 0 };
+  return instantiatePiece(type);
+}
+
+function makeBombPiece() {
+  return instantiatePiece(BOMB_TYPE);
+}
+
+function nextFromPool() {
+  if (bombQueued) {
+    bombQueued = false;
+    return makeBombPiece();
+  }
+  if (pieceQueue.length) {
+    return instantiatePiece(pieceQueue.shift());
+  }
+  return randomPiece();
 }
 
 function collide(shape, ox, oy) {
@@ -138,8 +171,24 @@ function clearLines() {
     score += (LINE_SCORES[cleared] || 0) * level;
     level = Math.floor(lines / 10) + 1;
     dropInterval = Math.max(100, 1000 - (level - 1) * 90);
+    linesSinceBomb += cleared;
+    while (linesSinceBomb >= LINES_PER_BOMB) {
+      linesSinceBomb -= LINES_PER_BOMB;
+      bombQueued = true;
+    }
     updateHUD();
   }
+}
+
+function explodeBomb() {
+  for (let r = current.y - 1; r <= current.y + 1; r++) {
+    if (r < 0 || r >= ROWS) continue;
+    for (let c = current.x - 1; c <= current.x + 1; c++) {
+      if (c < 0 || c >= COLS) continue;
+      board[r][c] = 0;
+    }
+  }
+  score += BOMB_SCORE;
 }
 
 function ghostY() {
@@ -166,14 +215,40 @@ function softDrop() {
 }
 
 function lockPiece() {
-  merge();
-  clearLines();
+  if (current.type === BOMB_TYPE) {
+    explodeBomb();
+  } else {
+    merge();
+    clearLines();
+  }
+  if (swapLocked) {
+    piecesUntilSwap--;
+    if (piecesUntilSwap <= 0) {
+      swapLocked = false;
+      piecesUntilSwap = 0;
+    }
+  }
   spawn();
+  updateHUD();
+}
+
+function trySwap() {
+  if (swapLocked) return;
+  const swapped = instantiatePiece(next.type);
+  if (collide(swapped.shape, swapped.x, swapped.y)) return;
+  const upcoming = nextFromPool();
+  pieceQueue.push(current.type);
+  current = swapped;
+  next = upcoming;
+  swapLocked = true;
+  piecesUntilSwap = SWAP_COOLDOWN_PIECES;
+  drawNext();
+  updateHUD();
 }
 
 function spawn() {
   current = next;
-  next = randomPiece();
+  next = nextFromPool();
   if (collide(current.shape, current.x, current.y)) {
     endGame();
   }
@@ -184,6 +259,18 @@ function updateHUD() {
   scoreEl.textContent = score.toLocaleString();
   linesEl.textContent = lines;
   levelEl.textContent = level;
+  powerupEl.textContent = current.type === BOMB_TYPE || next.type === BOMB_TYPE
+    ? '¡Activo!'
+    : (LINES_PER_BOMB - linesSinceBomb);
+
+  swapCounterEl.textContent = swapLocked ? '1/1' : '0/1';
+  swapSectionEl.classList.toggle('disabled', swapLocked);
+  if (swapLocked) {
+    swapProgressEl.hidden = false;
+    swapProgressEl.textContent = `Disponible en ${piecesUntilSwap} pieza${piecesUntilSwap === 1 ? '' : 's'}`;
+  } else {
+    swapProgressEl.hidden = true;
+  }
 }
 
 function drawBlock(context, x, y, colorIndex, size, alpha) {
@@ -195,6 +282,12 @@ function drawBlock(context, x, y, colorIndex, size, alpha) {
   // highlight
   context.fillStyle = 'rgba(255,255,255,0.12)';
   context.fillRect(x * size + 1, y * size + 1, size - 2, 4);
+  if (colorIndex === BOMB_TYPE) {
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.font = `${Math.floor(size * 0.7)}px sans-serif`;
+    context.fillText('💣', x * size + size / 2, y * size + size / 2 + 1);
+  }
   context.globalAlpha = 1;
 }
 
@@ -297,6 +390,11 @@ function init() {
   gameOver = false;
   dropInterval = 1000;
   dropAccum = 0;
+  linesSinceBomb = 0;
+  bombQueued = false;
+  pieceQueue = [];
+  swapLocked = false;
+  piecesUntilSwap = 0;
   lastTime = performance.now();
   next = randomPiece();
   spawn();
@@ -326,6 +424,10 @@ document.addEventListener('keydown', e => {
     case 'Space':
       e.preventDefault();
       hardDrop();
+      break;
+    case 'KeyH':
+    case 'KeyE':
+      trySwap();
       break;
   }
   updateHUD();
